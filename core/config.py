@@ -23,6 +23,8 @@ class Config:
             config_path = os.path.join(exe_dir, "settings.ini")
         self.path = config_path
         self.config = configparser.ConfigParser()
+        # Bug 14 修复: 脏标志，仅在真正有修改时才写入磁盘
+        self._dirty = False
         self._ensure_defaults()
         self.config.read(self.path, encoding='utf-8')
 
@@ -31,7 +33,10 @@ class Config:
         if os.path.exists(self.path):
             return
         try:
-            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            # Bug 7 修复: 处理 os.path.dirname 返回空字符串的情况
+            dir_path = os.path.dirname(self.path)
+            if dir_path:
+                os.makedirs(dir_path, exist_ok=True)
         except OSError:
             pass
         self.config['General'] = {
@@ -50,12 +55,17 @@ class Config:
         self._write()
 
     def _write(self):
-        """写入配置文件"""
+        """写入配置文件（仅当有脏标志或首次创建时）"""
         try:
-            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            # Bug 7 修复: 写入前同样检查 dirname
+            dir_path = os.path.dirname(self.path)
+            if dir_path:
+                os.makedirs(dir_path, exist_ok=True)
             with open(self.path, 'w', encoding='utf-8') as f:
                 self.config.write(f)
+            self._dirty = False
         except Exception as e:
+            self._dirty = True  # 保留脏标志，下次重试
             print(f"写入配置文件失败: {e}", file=sys.stderr)
 
     # ---- 读取方法 ----
@@ -84,18 +94,20 @@ class Config:
     # ---- 写入方法 ----
 
     def set(self, section, key, value):
-        """设置配置项的值"""
+        """设置配置项的值（仅修改内存，需调用 save() 持久化）"""
         if section not in self.config:
             self.config[section] = {}
         self.config[section][key] = str(value)
+        self._dirty = True
 
     def setboolean(self, section, key, value):
         """设置布尔配置项的值"""
         self.set(section, key, 'true' if value else 'false')
 
     def save(self):
-        """保存配置到文件"""
+        """保存配置到文件（仅当有修改时才写入）"""
         try:
-            self._write()
+            if self._dirty:
+                self._write()
         except Exception as e:
             print(f"保存配置失败: {e}", file=sys.stderr)

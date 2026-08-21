@@ -19,9 +19,7 @@ CLI 参数:
 
 import os
 import sys
-import re
 import time
-import threading
 
 # 确保项目根目录在 sys.path 中（打包后不需要）
 if not getattr(sys, 'frozen', False):
@@ -33,6 +31,7 @@ from core.actions import (
     ACTION_MAP, execute_action, shutdown, restart, logoff,
     sleep, monitor_off, run_program, play_sound, show_message
 )
+from core.common import write_log, strip_quotes, get_log_path
 from core.config import Config
 from core.timer_engine import TimerEngine
 
@@ -100,37 +99,43 @@ def parse_args(argv=None):
         # 处理 /rp=path (运行程序)
         elif arg.startswith('/rp='):
             path = arg[4:]
+            path = strip_quotes(path)
             result['action'] = 5
             result['rp_path'] = path
-            result['action_func'] = lambda: run_program(result['rp_path'], result['rp_args'])
+            # Bug B 修复: CLI 不支持 rp_args，直接传空字符串
+            result['action_func'] = lambda p=path: run_program(p)
         # 处理 /ra=path (播放声音)
         elif arg.startswith('/ra='):
             path = arg[4:]
+            path = strip_quotes(path)
             result['action'] = 6
             result['ra_path'] = path
-            result['action_func'] = lambda: play_sound(result['ra_path'])
+            result['action_func'] = lambda p=path: play_sound(p)
         # 处理 /m=text (弹出消息)
         elif arg.startswith('/m='):
             text = arg[3:]
             result['action'] = 7
             result['m_text'] = text
-            result['action_func'] = lambda: show_message(result['m_text'])
+            result['action_func'] = lambda t=text: show_message(t)
         # 处理 /rp 或 /ra 或 /m 带参数在下一个参数（老风格）
         elif arg == '/rp' and i + 1 < len(argv):
             i += 1
+            p = argv[i]
             result['action'] = 5
-            result['rp_path'] = argv[i]
-            result['action_func'] = lambda: run_program(result['rp_path'], result['rp_args'])
+            result['rp_path'] = p
+            result['action_func'] = lambda path=p: run_program(path)
         elif arg == '/ra' and i + 1 < len(argv):
             i += 1
+            p = argv[i]
             result['action'] = 6
-            result['ra_path'] = argv[i]
-            result['action_func'] = lambda: play_sound(result['ra_path'])
+            result['ra_path'] = p
+            result['action_func'] = lambda path=p: play_sound(path)
         elif arg == '/m' and i + 1 < len(argv):
             i += 1
+            t = argv[i]
             result['action'] = 7
-            result['m_text'] = argv[i]
-            result['action_func'] = lambda: show_message(result['m_text'])
+            result['m_text'] = t
+            result['action_func'] = lambda text=t: show_message(text)
         # 处理 X, S, R, L
         elif arg.upper() in cli_actions:
             result['action'] = cli_actions[arg.upper()]
@@ -248,9 +253,20 @@ def main():
 
                 # 除非指定了 /w，否则自动开始倒计时
                 if not params['w'] and params['action'] is not None:
-                    # 设置操作
+                    # Bug A 修复: 将 CLI 参数同步到 GUI 控件
+                    if params['action'] == 5 and params['rp_path']:
+                        app.entry_prog_path.delete(0, "end")
+                        app.entry_prog_path.insert(0, params['rp_path'])
+                    elif params['action'] == 6 and params['ra_path']:
+                        app.entry_sound_path.delete(0, "end")
+                        app.entry_sound_path.insert(0, params['ra_path'])
+                    elif params['action'] == 7 and params['m_text']:
+                        app.text_msg.delete("1.0", "end")
+                        app.text_msg.insert("1.0", params['m_text'])
+                    # 设置操作并触发界面更新
                     app.action_var.set(params['action'])
                     app._on_action_changed()
+                    # Bug C 修复: /sm 和 /som 可直接用 action_func 执行（倒计时已走完）
                     # 自动开始
                     app.root.after(500, app._on_start_timer)
 
@@ -258,20 +274,12 @@ def main():
         except Exception as e:
             import traceback
             err_msg = f"启动GUI异常: {e}\n\n{traceback.format_exc()}"
-            exe_dir = os.path.dirname(os.path.abspath(sys.executable)) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-            log_path = os.path.join(exe_dir, "_error.log")
-            try:
-                with open(log_path, 'w', encoding='utf-8') as f:
-                    f.write(err_msg)
-            except Exception:
-                pass
+            log_path = get_log_path()
+            write_log("启动GUI异常", e)
             print(f"错误: {e}", file=sys.stderr)
             print(f"日志: {log_path}", file=sys.stderr)
             # 回退到 CLI 模式
-            if hasattr(e, 'message'):
-                print(f"无法启动图形界面: {e.message}", file=sys.stderr)
-            else:
-                print(f"无法启动图形界面: {e}", file=sys.stderr)
+            print(f"无法启动图形界面: {e}", file=sys.stderr)
             sys.exit(1)
 
 

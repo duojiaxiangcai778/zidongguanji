@@ -3,11 +3,11 @@
 
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 
 class TimerEngine:
-    """倒计时引擎，支持三种定时模式"""
+    """倒计时引擎，支持三种定时模式（线程安全）"""
 
     MODE_COUNTDOWN = "countdown"   # 倒计时
     MODE_AT_TIME   = "at_time"     # 日期定时
@@ -15,8 +15,9 @@ class TimerEngine:
 
     def __init__(self):
         self._thread = None
-        self._paused = False
-        self._cancel = False
+        # Bug 3 修复: 使用 threading.Event 替代普通布尔值，确保线程安全
+        self._pause_event = threading.Event()  # set=暂停, clear=继续
+        self._cancel_event = threading.Event()  # set=取消
         self._remaining = 0
         self._total = 0
         self._mode = self.MODE_COUNTDOWN
@@ -34,8 +35,8 @@ class TimerEngine:
         :param on_complete: 完成回调 callback()
         """
         self._mode = self.MODE_COUNTDOWN
-        self._cancel = False
-        self._paused = False
+        self._cancel_event.clear()
+        self._pause_event.clear()
         self._total = max(1, seconds)
         self._remaining = self._total
         self._on_tick = on_tick
@@ -48,8 +49,8 @@ class TimerEngine:
         :param target_time: datetime 对象，指定触发时间
         """
         self._mode = self.MODE_AT_TIME
-        self._cancel = False
-        self._paused = False
+        self._cancel_event.clear()
+        self._pause_event.clear()
         now = datetime.now()
         delta = (target_time - now).total_seconds()
         self._total = max(1, int(delta))
@@ -68,8 +69,8 @@ class TimerEngine:
         :param second: 触发秒 (0-59)
         """
         self._mode = self.MODE_PERIODIC
-        self._cancel = False
-        self._paused = False
+        self._cancel_event.clear()
+        self._pause_event.clear()
         self._periodic_config = {
             'weekdays': weekdays,
             'hour': hour,
@@ -85,55 +86,59 @@ class TimerEngine:
         self._start_thread(self._periodic_loop)
 
     def _start_thread(self, target):
-        """启动后台线程"""
-        self._thread = threading.Thread(target=target, daemon=True)
+        """启动后台线程，禁止旧任务与新任务并行运行。"""
+        if self.is_running:
+            raise RuntimeError("已有定时任务正在运行，请先停止当前任务")
+        self._thread = threading.Thread(target=target, daemon=True, name="shutdown-timer")
         self._thread.start()
 
     # ---- 内部循环 ----
 
     def _countdown_loop(self):
-        """基本倒计时循环"""
-        while self._remaining > 0 and not self._cancel:
-            if not self._paused:
+        """基本倒计时循环（线程安全）"""
+        while self._remaining > 0 and not self._cancel_event.is_set():
+            if not self._pause_event.is_set():
                 time.sleep(1)
                 # 再次检查暂停/取消状态（避免 time.sleep 期间被暂停的竞态条件）
-                if not self._cancel and not self._paused:
+                if not self._cancel_event.is_set() and not self._pause_event.is_set():
                     self._remaining -= 1
                     self._safe_tick()
             else:
-                time.sleep(0.1)
+                # 暂停期间等待，同时检查取消信号
+                self._pause_event.wait(timeout=0.1)
 
-        if not self._cancel:
+        if not self._cancel_event.is_set():
             self._safe_complete()
 
     def _periodic_loop(self):
         """周期循环 — 每次触发后重新计算下一次"""
-        while not self._cancel:
+        while not self._cancel_event.is_set():
             # 倒计时到触发点
-            while self._remaining > 0 and not self._cancel:
-                if not self._paused:
+            while self._remaining > 0 and not self._cancel_event.is_set():
+                if not self._pause_event.is_set():
                     time.sleep(1)
-                    if not self._cancel:
+                    if not self._cancel_event.is_set():
                         self._remaining -= 1
                         self._safe_tick()
                 else:
-                    time.sleep(0.1)
+                    self._pause_event.wait(timeout=0.1)
 
-            if self._cancel:
+            if self._cancel_event.is_set():
                 break
 
             # 触发完成回调
             self._safe_complete()
 
             # 如果不是取消状态，重新计算下一次
-            if not self._cancel and self._periodic_config:
+            if not self._cancel_event.is_set() and self._periodic_config:
                 seconds = self._calc_next_periodic_seconds(
                     self._periodic_config['weekdays'],
                     self._periodic_config['hour'],
                     self._periodic_config['minute'],
                     self._periodic_config['second'],
                 )
-                self._total = max(1, seconds)
+                # Bug W 修复: 确保周期模式至少有 60 秒间隔，防止异常循环
+                self._total = max(60, seconds)
                 self._remaining = self._total
 
     def _safe_tick(self):
@@ -182,15 +187,16 @@ class TimerEngine:
 
     def pause(self):
         """暂停倒计时"""
-        self._paused = True
+        self._pause_event.set()
 
     def resume(self):
         """恢复倒计时"""
-        self._paused = False
+        self._pause_event.clear()
 
     def stop(self):
-        """停止倒计时"""
-        self._cancel = True
+        """停止倒计时，并唤醒暂停状态下的线程。"""
+        self._cancel_event.set()
+        self._pause_event.clear()
 
     # ---- 属性 ----
 
@@ -212,7 +218,7 @@ class TimerEngine:
 
     @property
     def is_paused(self):
-        return self._paused
+        return self._pause_event.is_set()
 
     @property
     def mode(self):

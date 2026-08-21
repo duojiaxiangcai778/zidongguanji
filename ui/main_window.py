@@ -14,8 +14,12 @@ from tkinter import (
 )
 
 from core.config import Config
-from core.actions import ACTION_MAP, CRITICAL_ACTIONS, get_action_name, execute_action
+from core.actions import (
+    ACTION_MAP, CRITICAL_ACTIONS, get_action_name, execute_action,
+    clean_sound_resources, set_force_close
+)
 from core.timer_engine import TimerEngine
+from core.common import write_log, get_log_path, get_exe_dir
 
 # ============================================================
 # 系统托盘实现（Windows API, ctypes）
@@ -119,10 +123,21 @@ class SystemTray:
         nid.uID = 1
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
         nid.uCallbackMessage = WM_TRAYICON
-        nid.szTip = "自动关机工具 v1.0"
+        nid.szTip = "自动关机工具 v1.1"
 
-        # 加载默认应用图标
-        nid.hIcon = ctypes.windll.user32.LoadIconW(0, 32512)
+        # Bug 12 修复: 尝试加载应用程序自己的图标，失败则用系统图标
+        icon_path = os.path.join(get_exe_dir(), "auto_shutdown.ico")
+        icon_h = None
+        if os.path.isfile(icon_path):
+            try:
+                icon_h = ctypes.windll.user32.LoadImageW(
+                    0, icon_path, 1, 0, 0, 0x00000010  # IMAGE_ICON, LR_LOADFROMFILE
+                )
+            except Exception:
+                pass
+        if not icon_h:
+            icon_h = ctypes.windll.user32.LoadIconW(0, 32512)  # 系统默认图标（兜底）
+        nid.hIcon = icon_h
 
         ctypes.windll.shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(nid))
         self._icon_added = True
@@ -160,8 +175,14 @@ class SystemTray:
             x = self.root.winfo_pointerx()
             y = self.root.winfo_pointery()
             menu.tk_popup(x, y)
+        except Exception:
+            pass
         finally:
-            menu.grab_release()
+            # Bug V 修复: grab_release 可能因窗口已销毁抛异常
+            try:
+                menu.grab_release()
+            except Exception:
+                pass
 
     def _default_show(self):
         """默认显示窗口"""
@@ -208,6 +229,16 @@ class MainWindow:
         self.is_counting = False    # 定时器是否正在运行
         self.is_paused = False      # 定时器是否暂停
         self._closing = False       # 正在关闭标志
+        self._minimizing = False    # Bug R 修复: 最小化防重入标志
+
+        # Bug 4 修复: 缓存配置值，避免每秒读文件
+        self._cached_progress_mode = None
+        self._cached_play_sound = None
+        self._refresh_config_cache()
+
+        # Bug O 修复: 将 force_close 设置同步到 actions 模块
+        force = self.config.getboolean('General', 'force_close', False)
+        set_force_close(force)
 
         # 字体变量（必须用实例变量）
         self.f_sec = ("微软雅黑", 10)
@@ -217,9 +248,17 @@ class MainWindow:
         self.f_timer = ("Consolas", 24, "bold")
 
         # ---- 窗口基本设置 ----
-        self.root.title("自动关机工具 v1.0")
-        self.root.resizable(False, False)
-        self.root.minsize(640, 480)
+        self.root.title("自动关机工具 v1.1")
+        self.root.resizable(True, True)
+        self.root.minsize(760, 560)
+        self.root.configure(bg="#f4f6f8")
+        self.root.option_add("*Font", "微软雅黑 10")
+        self.root.option_add("*Button.background", "#e8edf2")
+        self.root.option_add("*Button.activeBackground", "#d7e1ec")
+        self.root.option_add("*Button.foreground", "#17212b")
+        self.root.option_add("*LabelFrame.background", "#ffffff")
+        self.root.option_add("*LabelFrame.foreground", "#334155")
+        self._apply_theme()
 
         # ---- 构建界面 ----
         self._build_menu()
@@ -234,8 +273,14 @@ class MainWindow:
         # ---- 绑定事件 ----
         self._bind_events()
 
-        # 协议：关闭窗口
-        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
+    def _apply_theme(self):
+        """统一 Tk 控件配色，提升层级和可读性。"""
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("vista")
+        except Exception:
+            pass
+        style.configure("TProgressbar", troughcolor="#dfe5eb", background="#2474d2", lightcolor="#2474d2", darkcolor="#2474d2")
 
     # ============================================================
     # 构建菜单
@@ -264,16 +309,20 @@ class MainWindow:
 
     def _build_ui(self):
         """构建主界面所有控件"""
-        main_frame = Frame(self.root, padx=10, pady=10)
+        main_frame = Frame(self.root, padx=18, pady=16, bg="#f4f6f8")
         main_frame.pack(fill="both", expand=True)
+        header = Frame(main_frame, bg="#f4f6f8")
+        header.pack(fill="x", pady=(0, 12))
+        Label(header, text="自动关机工具", font=("微软雅黑", 18, "bold"), fg="#17212b", bg="#f4f6f8").pack(anchor="w")
+        Label(header, text="安排系统操作，状态会在下方实时更新", font=self.f_small, fg="#65727e", bg="#f4f6f8").pack(anchor="w", pady=(3, 0))
 
         # 上部：操作选择 + 定时模式（左右分栏）
-        top_frame = Frame(main_frame)
-        top_frame.pack(fill="x", pady=(0, 10))
+        top_frame = Frame(main_frame, bg="#f4f6f8")
+        top_frame.pack(fill="x", pady=(0, 12))
 
         # ---- 左：操作选择 ----
         action_frame = LabelFrame(top_frame, text=" 可以执行的操作 ",
-                                  font=self.f_normal, padx=8, pady=5)
+                                  font=self.f_title, bg="#ffffff", padx=14, pady=10, bd=1, relief="solid")
         action_frame.pack(side="left", fill="y", padx=(0, 10))
 
         action_names = [get_action_name(i) for i in range(8)]
@@ -286,7 +335,7 @@ class MainWindow:
 
         # ---- 右：定时模式 ----
         timer_frame = LabelFrame(top_frame, text=" 定时模式 ",
-                                 font=self.f_normal, padx=8, pady=5)
+                                 font=self.f_title, bg="#ffffff", padx=14, pady=10, bd=1, relief="solid")
         timer_frame.pack(side="left", fill="both", expand=True)
 
         # 模式选择收音钮行
@@ -370,7 +419,7 @@ class MainWindow:
 
         # ---- 中间：操作参数区域 ----
         self.param_frame = LabelFrame(main_frame, text=" 操作参数 ",
-                                      font=self.f_normal, padx=8, pady=5)
+                                      font=self.f_title, bg="#ffffff", padx=14, pady=10, bd=1, relief="solid")
         self.param_frame.pack(fill="x", pady=(0, 10))
 
         # 运行程序参数
@@ -406,11 +455,14 @@ class MainWindow:
         # 根据初始操作（0=关机）不需要参数面板
         self.param_frame.pack_forget()
 
-        # ---- 按钮行 ----
-        btn_frame = Frame(main_frame)
-        btn_frame.pack(fill="x", pady=(0, 10))
+        # Bug D 修复: 确保定时模式面板的初始状态与 timer_mode_var 一致
+        self._on_timer_mode_changed()
 
-        self.btn_start = Button(btn_frame, text="开始定时器", font=self.f_normal,
+        # ---- 按钮行 ----
+        btn_frame = Frame(main_frame, bg="#f4f6f8")
+        btn_frame.pack(fill="x", pady=(0, 12))
+
+        self.btn_start = Button(btn_frame, text="开始定时器", font=("微软雅黑", 10, "bold"), bg="#1f8b5b", activebackground="#176d47", fg="#ffffff", activeforeground="#ffffff", relief="flat",
                                 width=16, command=self._on_start_timer)
         self.btn_start.pack(side="left", padx=(0, 8))
 
@@ -419,7 +471,7 @@ class MainWindow:
                                 state="disabled")
         self.btn_pause.pack(side="left", padx=(0, 8))
 
-        self.btn_now = Button(btn_frame, text="立即执行选中的操作", font=self.f_normal,
+        self.btn_now = Button(btn_frame, text="立即执行选中的操作", font=("微软雅黑", 10, "bold"), bg="#e8edf2", activebackground="#d7e1ec", relief="flat",
                               width=22, command=self._on_execute_now)
         self.btn_now.pack(side="left", padx=(0, 8))
 
@@ -429,7 +481,7 @@ class MainWindow:
         self.btn_stop.pack(side="left")
 
         # ---- 倒计时显示 + 进度条 ----
-        progress_frame = Frame(main_frame, relief="groove", bd=1, padx=8, pady=5)
+        progress_frame = Frame(main_frame, bg="#ffffff", relief="solid", bd=1, padx=16, pady=12)
         progress_frame.pack(fill="x")
 
         self.label_time_display = Label(progress_frame, text="准备就绪",
@@ -448,7 +500,8 @@ class MainWindow:
 
         # ---- 状态栏 ----
         self.status_bar = Label(main_frame, text="就绪", font=self.f_small,
-                                bd=1, relief="sunken", anchor="w")
+                                bg="#e8edf2", fg="#3e4b57", padx=8, pady=5,
+                                bd=0, relief="flat", anchor="w")
         self.status_bar.pack(fill="x", pady=(5, 0))
 
     # ============================================================
@@ -508,7 +561,7 @@ class MainWindow:
     def _browse_sound(self):
         """浏览选择声音文件"""
         path = filedialog.askopenfilename(
-            title="选择声音文件",
+            title="选择声音文件（WAV 原生支持，MP3/MID 通过系统 API 播放）",
             filetypes=[("音频文件", "*.wav;*.mp3;*.mid"),
                        ("所有文件", "*.*")]
         )
@@ -531,11 +584,15 @@ class MainWindow:
             total_seconds = 0
 
             if mode == "countdown":
-                # 读取倒计时时间
-                days = int(self.spin_days.get())
-                hours = int(self.spin_hours.get())
-                mins = int(self.spin_mins.get())
-                secs = int(self.spin_secs.get())
+                # Bug U 修复: Spinbox 非法值保护
+                try:
+                    days = int(self.spin_days.get())
+                    hours = int(self.spin_hours.get())
+                    mins = int(self.spin_mins.get())
+                    secs = int(self.spin_secs.get())
+                except ValueError:
+                    messagebox.showwarning("输入错误", "倒计时时间格式无效，请检查输入")
+                    return
                 total_seconds = days * 86400 + hours * 3600 + mins * 60 + secs
                 if total_seconds <= 0:
                     messagebox.showwarning("提示", "请设置大于 0 的倒计时时间")
@@ -567,14 +624,19 @@ class MainWindow:
                 )
 
             elif mode == "periodic":
+                # Bug U/X4 修复: Spinbox 非法值保护
+                try:
+                    hour = int(self.spin_p_hour.get())
+                    minute = int(self.spin_p_min.get())
+                    second = int(self.spin_p_sec.get())
+                except ValueError:
+                    messagebox.showwarning("输入错误", "时间段时间格式无效，请检查输入")
+                    return
                 # 读取时间段配置
                 selected_days = {i for i, var in self.periodic_vars.items() if var.get()}
                 if not selected_days:
                     messagebox.showwarning("提示", "请至少选择一天")
                     return
-                hour = int(self.spin_p_hour.get())
-                minute = int(self.spin_p_min.get())
-                second = int(self.spin_p_sec.get())
 
                 self.timer.start_periodic(
                     selected_days, hour, minute, second,
@@ -599,15 +661,8 @@ class MainWindow:
                 self.tray.update_tooltip(f"⏳ {self._format_time(total_seconds)}")
 
         except Exception as e:
-            import traceback
-            err_msg = f"启动定时器异常: {e}\n\n{traceback.format_exc()}"
-            exe_dir = os.path.dirname(os.path.abspath(sys.executable)) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-            log_path = os.path.join(exe_dir, "_error.log")
-            try:
-                with open(log_path, 'w', encoding='utf-8') as f:
-                    f.write(err_msg)
-            except Exception:
-                pass
+            write_log("启动定时器异常", e, append=True)
+            log_path = get_log_path()
             messagebox.showerror("启动失败", f"启动定时器出错: {e}\n日志: {log_path}")
 
     def _on_pause_timer(self):
@@ -641,7 +696,7 @@ class MainWindow:
             self._reset_timer_ui()
             self.status_bar.config(text="定时器已停止")
             if self.tray:
-                self.tray.update_tooltip("自动关机工具 v1.0")
+                self.tray.update_tooltip("自动关机工具 v1.1")
         except Exception as e:
             messagebox.showerror("操作失败", f"停止定时器出错: {e}")
 
@@ -667,8 +722,8 @@ class MainWindow:
                 pct = int((total - remaining) / total * 100)
                 self.progress_var.set(pct)
 
-            # 更新进度信息文字
-            mode = self.config.get('General', 'progress_mode', 'percent')
+            # Bug 4 修复: 使用缓存配置值，避免每秒读取文件
+            mode = self._cached_progress_mode
             if mode == 'percent':
                 pct = int((total - remaining) / total * 100) if total > 0 else 0
                 self.label_progress_info.config(text=f"已完成 {pct}%")
@@ -681,30 +736,24 @@ class MainWindow:
             if self.tray:
                 self.tray.update_tooltip(f"⏳ {time_str}")
 
-            # 最后10秒播放音效
+            # Bug 4 修复: 使用缓存配置值
             if remaining <= 10 and remaining > 0:
-                play_sound = self.config.getboolean('General', 'play_sound_last_10s', True)
-                if play_sound:
+                if self._cached_play_sound:
                     try:
                         winsound.Beep(800, 100)
                     except Exception:
                         pass
 
         except Exception as e:
-            # 不阻塞定时器，静默记录
-            import traceback
-            err_msg = f"UI更新异常: {e}\n\n{traceback.format_exc()}"
-            exe_dir = os.path.dirname(os.path.abspath(sys.executable)) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-            log_path = os.path.join(exe_dir, "_error.log")
-            try:
-                with open(log_path, 'a', encoding='utf-8') as f:
-                    f.write(err_msg + "\n")
-            except Exception:
-                pass
+            # Bug 8 修复: 统一使用追加模式
+            write_log("UI更新异常", e, append=True)
 
     def _on_timer_complete(self):
         """定时器完成回调（后台线程）"""
         try:
+            # Bug S 修复: 检查窗口是否已关闭，防止 TclError
+            if self._closing:
+                return
             self.root.after(0, self._execute_timer_action)
         except Exception:
             pass
@@ -712,9 +761,17 @@ class MainWindow:
     def _execute_timer_action(self):
         """执行定时器触发的操作"""
         try:
-            self.is_counting = False
-            self.is_paused = False
-            self._reset_timer_ui()
+            mode = self.timer.mode
+            # Bug 2 修复: 周期模式下定时器引擎仍在继续，不改变 is_counting
+            if mode != TimerEngine.MODE_PERIODIC:
+                self.is_counting = False
+                self.is_paused = False
+                self._reset_timer_ui()
+            else:
+                # 周期模式下仅重置按钮状态，保持 is_counting=True
+                self.btn_start.config(state="disabled")
+                self.btn_pause.config(state="normal", text="暂停定时器")
+                self.btn_stop.config(state="normal")
 
             action = self.action_var.get()
             action_name = get_action_name(action)
@@ -740,7 +797,12 @@ class MainWindow:
                 if not result:
                     self.status_bar.config(text="操作已取消")
                     if self.tray:
-                        self.tray.update_tooltip("自动关机工具 v1.0")
+                        self.tray.update_tooltip("自动关机工具 v1.1")
+                    # Bug 10 修复: 周期模式下取消时保持界面同步
+                    if mode == TimerEngine.MODE_PERIODIC:
+                        # 重新显示下一个周期的剩余时间
+                        self._set_time_display(self._format_time(self.timer.remaining))
+                        self.status_bar.config(text="操作已取消，等待下一周期")
                     return
 
             # 收集操作参数
@@ -765,18 +827,12 @@ class MainWindow:
 
             # 更新托盘
             if self.tray:
-                self.tray.update_tooltip("自动关机工具 v1.0")
+                self.tray.update_tooltip("自动关机工具 v1.1")
 
         except Exception as e:
-            import traceback
-            err_msg = f"执行定时操作异常: {e}\n\n{traceback.format_exc()}"
-            exe_dir = os.path.dirname(os.path.abspath(sys.executable)) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-            log_path = os.path.join(exe_dir, "_error.log")
-            try:
-                with open(log_path, 'w', encoding='utf-8') as f:
-                    f.write(err_msg)
-            except Exception:
-                pass
+            # Bug 8 修复: 统一使用追加模式
+            write_log("执行定时操作异常", e, append=True)
+            log_path = get_log_path()
             messagebox.showerror("执行失败", f"操作出错: {e}\n日志: {log_path}")
             self.status_bar.config(text="执行失败")
 
@@ -785,6 +841,24 @@ class MainWindow:
         try:
             action = self.action_var.get()
             action_name = get_action_name(action)
+
+            # Bug K 修复: 检查是否需要确认
+            ask = self.config.getboolean('General', 'ask_before_execute', True)
+            critical_only = self.config.getboolean('General', 'ask_critical_only', False)
+            should_ask = False
+            if ask:
+                if critical_only:
+                    should_ask = (action in CRITICAL_ACTIONS)
+                else:
+                    should_ask = True
+            if should_ask:
+                result = messagebox.askyesno(
+                    "确认操作",
+                    f"即将执行以下操作：\n\n【{action_name}】\n\n是否继续？"
+                )
+                if not result:
+                    self.status_bar.config(text="操作已取消")
+                    return
 
             # 如果有定时器正在运行，先停止
             if self.is_counting:
@@ -815,15 +889,8 @@ class MainWindow:
                 self.status_bar.config(text=f"操作失败: {action_name}")
 
         except Exception as e:
-            import traceback
-            err_msg = f"立即执行异常: {e}\n\n{traceback.format_exc()}"
-            exe_dir = os.path.dirname(os.path.abspath(sys.executable)) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-            log_path = os.path.join(exe_dir, "_error.log")
-            try:
-                with open(log_path, 'w', encoding='utf-8') as f:
-                    f.write(err_msg)
-            except Exception:
-                pass
+            write_log("立即执行异常", e, append=True)
+            log_path = get_log_path()
             messagebox.showerror("执行失败", f"操作出错: {e}\n日志: {log_path}")
             self.status_bar.config(text="执行失败")
 
@@ -894,17 +961,26 @@ class MainWindow:
         btn_frame.pack(fill="x", pady=(15, 0))
 
         def _save_settings():
-            self.config.setboolean('General', 'ask_before_execute', ask_exec.get())
-            self.config.setboolean('General', 'ask_critical_only', ask_crit.get())
-            self.config.setboolean('General', 'ask_before_close', ask_close.get())
-            self.config.setboolean('General', 'force_close', force_close.get())
-            self.config.setboolean('General', 'play_sound_last_10s', play_sound.get())
-            self.config.setboolean('General', 'minimize_to_tray', min_tray.get())
-            self.config.setboolean('General', 'esc_minimize', esc_min.get())
-            self.config.set('General', 'progress_mode', prog_mode.get())
-            self.config.save()
-            dialog.destroy()
-            messagebox.showinfo("设置", "设置已保存")
+            try:
+                self.config.setboolean('General', 'ask_before_execute', ask_exec.get())
+                self.config.setboolean('General', 'ask_critical_only', ask_crit.get())
+                self.config.setboolean('General', 'ask_before_close', ask_close.get())
+                self.config.setboolean('General', 'force_close', force_close.get())
+                self.config.setboolean('General', 'play_sound_last_10s', play_sound.get())
+                self.config.setboolean('General', 'minimize_to_tray', min_tray.get())
+                self.config.setboolean('General', 'esc_minimize', esc_min.get())
+                self.config.set('General', 'progress_mode', prog_mode.get())
+                # Bug 14 修复: save() 内部通过脏标志判断，仅在有修改时写入
+                self.config.save()
+                # Bug O 修复: 同步 force_close 到 actions 模块
+                set_force_close(force_close.get())
+                # Bug 4 修复: 保存后刷新配置缓存
+                self._refresh_config_cache()
+                dialog.destroy()
+                messagebox.showinfo("设置", "设置已保存")
+            except Exception as e:
+                write_log("保存设置异常", e, append=True)
+                messagebox.showerror("保存失败", f"保存设置出错: {e}")
 
         Button(btn_frame, text="保存", font=self.f_normal, width=10,
                command=_save_settings).pack(side="right", padx=(5, 0))
@@ -921,7 +997,7 @@ class MainWindow:
         """显示关于对话框"""
         messagebox.showinfo(
             "关于 自动关机工具",
-            "自动关机工具 v1.0\n\n"
+            "自动关机工具 v1.1\n\n"
             "基于 Python + tkinter 复刻\n"
             "原版: PShutDown v1.2.3\n\n"
             "功能:\n"
@@ -961,23 +1037,31 @@ class MainWindow:
             self.timer.stop()
         if self.tray:
             self.tray.remove()
-        # 保存窗口位置
+        # Bug 13 修复: 保存窗口位置后再销毁
         self._save_geometry()
+        clean_sound_resources()
         self.root.destroy()
 
     def _minimize_to_tray(self):
         """最小化到系统托盘"""
-        if self.config.getboolean('General', 'minimize_to_tray', True) and self.tray:
-            self.root.withdraw()
-            if not self.tray._icon_added:
-                self.tray.install()
-            # 更新托盘提示
-            if self.is_counting and not self.is_paused:
-                self.tray.update_tooltip(f"⏳ {self._format_time(self.timer.remaining)}")
+        # Bug E 修复: 防重入守卫
+        if getattr(self, '_minimizing', False):
+            return
+        self._minimizing = True
+        try:
+            if self.config.getboolean('General', 'minimize_to_tray', True) and self.tray:
+                self.root.withdraw()
+                if not self.tray._icon_added:
+                    self.tray.install()
+                # 更新托盘提示
+                if self.is_counting and not self.is_paused:
+                    self.tray.update_tooltip(f"⏳ {self._format_time(self.timer.remaining)}")
+                else:
+                    self.tray.update_tooltip("自动关机工具 v1.1")
             else:
-                self.tray.update_tooltip("自动关机工具 v1.0")
-        else:
-            self.root.iconify()
+                self.root.iconify()
+        finally:
+            self._minimizing = False
 
     # ============================================================
     # 窗口事件
@@ -1004,6 +1088,9 @@ class MainWindow:
         # 只有真正的 iconify 才触发最小化到托盘
         if event.widget == self.root:
             try:
+                # Bug T 修复: 确保窗口仍存在
+                if not self.root.winfo_exists():
+                    return
                 state = self.root.state()
                 if state == "iconic":
                     self._minimize_to_tray()
@@ -1012,6 +1099,12 @@ class MainWindow:
 
     def _on_closing(self):
         """关闭窗口"""
+        # Bug F 修复: 先问退出确认，再停定时器
+        if self.config.getboolean('General', 'ask_before_close', True):
+            result = messagebox.askyesno("确认关闭", "确定要退出自动关机工具吗？")
+            if not result:
+                return
+
         if self.is_counting:
             # 如果定时器正在运行，先停止
             result = messagebox.askyesno("确认关闭",
@@ -1021,15 +1114,12 @@ class MainWindow:
             self.timer.stop()
             self.is_counting = False
 
-        if self.config.getboolean('General', 'ask_before_close', True):
-            result = messagebox.askyesno("确认关闭", "确定要退出自动关机工具吗？")
-            if not result:
-                return
-
         self._closing = True
         if self.tray:
             self.tray.remove()
+        # Bug 13 修复: 保存窗口位置后再销毁
         self._save_geometry()
+        clean_sound_resources()
         self.root.destroy()
 
     # ============================================================
@@ -1046,8 +1136,11 @@ class MainWindow:
             pass
 
     def _save_geometry(self):
-        """保存窗口位置"""
+        """保存窗口位置（检查窗口是否已销毁）"""
         try:
+            # Bug 13 修复: 检查窗口是否存在
+            if self._closing or not self.root.winfo_exists():
+                return
             geo = self.root.geometry()
             self.config.set('Window', 'geometry', geo)
             self.config.save()
@@ -1074,6 +1167,11 @@ class MainWindow:
             return f"{hours:02d}:{mins:02d}:{secs:02d}"
         else:
             return f"{mins:02d}:{secs:02d}"
+
+    def _refresh_config_cache(self):
+        """Bug 4 修复: 刷新配置缓存，在设置保存或启动时调用"""
+        self._cached_progress_mode = self.config.get('General', 'progress_mode', 'percent')
+        self._cached_play_sound = self.config.getboolean('General', 'play_sound_last_10s', True)
 
     def _set_time_display(self, text):
         """设置时间显示标签"""
