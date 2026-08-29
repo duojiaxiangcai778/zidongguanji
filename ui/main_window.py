@@ -67,6 +67,35 @@ WNDPROC_CB = ctypes.CFUNCTYPE(
 )
 
 
+def _bind_user32_wndproc():
+    """为托盘子类化相关 API 绑定签名；避免 64 位下指针被截断为 32 位导致子类化失败"""
+    try:
+        user32 = ctypes.windll.user32
+        user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+        user32.SetWindowLongPtrW.restype = ctypes.c_void_p
+        user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        user32.GetWindowLongPtrW.restype = ctypes.c_void_p
+        user32.CallWindowProcW.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                            ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+        user32.CallWindowProcW.restype = ctypes.c_long
+        user32.GetParent.argtypes = [ctypes.c_void_p]
+        user32.GetParent.restype = ctypes.c_void_p
+        user32.LoadImageW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p,
+                                       ctypes.c_uint, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+        user32.LoadImageW.restype = ctypes.c_void_p
+        user32.LoadIconW.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        user32.LoadIconW.restype = ctypes.c_void_p
+        shell32 = ctypes.windll.shell32
+        shell32.Shell_NotifyIconW.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+        shell32.Shell_NotifyIconW.restype = ctypes.c_bool
+    except Exception:
+        pass
+
+
+# 模块加载时绑定签名（防 64 位指针截断）
+_bind_user32_wndproc()
+
+
 class SystemTray:
     """Windows 系统托盘实现 (通过 WndProc 子类化)"""
 

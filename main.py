@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-自动关机工具 v1.0 — 入口 + CLI 参数解析
+自动关机工具 v1.1 — 入口 + CLI 参数解析
 
 CLI 参数:
   X, S            关闭电脑（可带 /t=秒 倒计时）
@@ -29,7 +29,8 @@ if not getattr(sys, 'frozen', False):
 
 from core.actions import (
     ACTION_MAP, execute_action, shutdown, restart, logoff,
-    sleep, monitor_off, run_program, play_sound, show_message
+    sleep, monitor_off, run_program, play_sound, show_message,
+    set_main_tk,
 )
 from core.common import write_log, strip_quotes, get_log_path
 from core.config import Config
@@ -214,6 +215,16 @@ def cli_mode(params):
 
 def main():
     """主入口"""
+    # P1 修复: 高 DPI 屏幕模糊 — 声明系统级 DPI 感知，Tk 按缩放因子自动放大字体
+    try:
+        import ctypes
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)  # Win 8.1+ / Win11
+        except Exception:
+            ctypes.windll.user32.SetProcessDPIAware()  # Win 7 兜底
+    except Exception:
+        pass
+
     # 解析命令行参数
     params = parse_args()
 
@@ -225,6 +236,11 @@ def main():
         try:
             from ui.main_window import MainWindow
             app = MainWindow()
+            # Bug P0 修复: 把主 Tk 注入 actions，让定时线程在主线程上弹窗（不创建额外 Tk）
+            try:
+                set_main_tk(app.root)
+            except Exception:
+                pass
 
             # 如果指定了 /min，启动后最小化
             if params['min']:

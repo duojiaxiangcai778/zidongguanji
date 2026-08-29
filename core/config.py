@@ -4,6 +4,7 @@
 import configparser
 import os
 import sys
+import tempfile
 
 
 class Config:
@@ -55,14 +56,30 @@ class Config:
         self._write()
 
     def _write(self):
-        """写入配置文件（仅当有脏标志或首次创建时）"""
+        """写入配置文件（原子写：先写临时文件，再 os.replace 覆盖）
+
+        Bug P0 修复: 避免写入中途断电/进程被杀导致 settings.ini 半截内容被清空。
+        """
         try:
             # Bug 7 修复: 写入前同样检查 dirname
             dir_path = os.path.dirname(self.path)
             if dir_path:
                 os.makedirs(dir_path, exist_ok=True)
-            with open(self.path, 'w', encoding='utf-8') as f:
-                self.config.write(f)
+            # 原子写：同目录的临时文件 + replace
+            fd, tmp = tempfile.mkstemp(
+                prefix=".settings_", suffix=".tmp", dir=dir_path or None
+            )
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                    self.config.write(f)
+                os.replace(tmp, self.path)
+            except Exception:
+                # 失败时清理临时文件
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
             self._dirty = False
         except Exception as e:
             self._dirty = True  # 保留脏标志，下次重试
