@@ -49,6 +49,8 @@ class Config:
             'minimize_to_tray': 'true',
             'esc_minimize': 'true',
             'progress_mode': 'percent',
+            'start_minimized': 'false',
+            'log_level': 'INFO',
         }
         self.config['Window'] = {
             'geometry': '',

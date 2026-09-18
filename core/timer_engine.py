@@ -11,6 +11,11 @@ import threading
 import time
 from datetime import datetime, timedelta
 
+from core.common import format_seconds
+from core.logger import get_logger
+
+log = get_logger("timer")
+
 
 class TimerEngine:
     """倒计时引擎，支持三种定时模式（线程安全）"""
@@ -50,6 +55,7 @@ class TimerEngine:
         self._deadline_mono = time.monotonic() + self._total
         self._on_tick = on_tick
         self._on_complete = on_complete
+        log.info("定时启动: 模式=倒计时 总时长=%s", format_seconds(self._total))
         self._start_thread(self._countdown_loop)
 
     def start_at_time(self, target_time, on_tick=None, on_complete=None):
@@ -67,6 +73,8 @@ class TimerEngine:
         self._deadline_mono = time.monotonic() + self._total
         self._on_tick = on_tick
         self._on_complete = on_complete
+        log.info("定时启动: 模式=指定时间 目标=%s 总时长=%s",
+                 target_time.strftime("%Y-%m-%d %H:%M:%S"), format_seconds(self._total))
         self._start_thread(self._countdown_loop)
 
     def start_periodic(self, weekdays, hour, minute, second,
@@ -94,6 +102,11 @@ class TimerEngine:
         self._total = max(60, int(seconds))
         self._remaining = self._total
         self._deadline_mono = time.monotonic() + self._total
+        log.info("定时启动: 模式=每周循环 触发日=%s 时点=%02d:%02d:%02d 下次触发=%s 总时长=%s",
+                 sorted(self._periodic_config['weekdays']),
+                 self._periodic_config['hour'], self._periodic_config['minute'],
+                 self._periodic_config['second'],
+                 self._next_periodic_target_str(), format_seconds(self._total))
         self._start_thread(self._periodic_loop)
 
     def _start_thread(self, target):
@@ -129,6 +142,7 @@ class TimerEngine:
                 self._total = seconds
                 self._remaining = seconds
                 self._deadline_mono = time.monotonic() + seconds
+            log.info("周期任务已触发一次，下次触发=%s", self._next_periodic_target_str())
 
     def _tick_loop(self):
         """单调时钟倒计时循环：每秒回调 remaining/total"""
@@ -184,8 +198,8 @@ class TimerEngine:
         if self._on_complete:
             try:
                 self._on_complete()
-            except Exception:
-                pass
+            except Exception as e:
+                log.error("完成回调执行异常: %s", e)
 
     # ---- 辅助方法 ----
 
@@ -214,15 +228,35 @@ class TimerEngine:
         delta = (target_dt - now).total_seconds()
         return max(1, int(delta))
 
+    def _next_periodic_target_str(self):
+        """返回下一次周期触发时间的人类可读描述（仅用于日志/显示）"""
+        try:
+            cfg = self._periodic_config
+            if not cfg:
+                return "未知"
+            now = datetime.now()
+            for days_ahead in range(0, 8):
+                candidate = (now + timedelta(days=days_ahead)).replace(
+                    hour=cfg['hour'], minute=cfg['minute'],
+                    second=cfg['second'], microsecond=0
+                )
+                if candidate.weekday() in cfg['weekdays'] and candidate > now:
+                    return candidate.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
+        return "未知"
+
     # ---- 控制方法 ----
 
     def pause(self):
         """暂停倒计时"""
         self._pause_event.set()
+        log.info("定时暂停: 剩余=%s", format_seconds(self._remaining))
 
     def resume(self):
         """恢复倒计时"""
         self._pause_event.clear()
+        log.info("定时恢复: 剩余=%s", format_seconds(self._remaining))
 
     def stop(self):
         """停止倒计时，并唤醒暂停状态下的线程。"""
@@ -230,6 +264,8 @@ class TimerEngine:
             self._cancel_event.set()
             self._pause_event.clear()
             # 唤醒可能阻塞在 sleep 的线程（最短 20ms 轮询，无需强唤醒）
+        log.info("定时停止: 已运行剩余=%s / 总时长=%s",
+                 format_seconds(self._remaining), format_seconds(self._total))
 
     # ---- 属性 ----
 

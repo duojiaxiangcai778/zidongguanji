@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-自动关机工具 v1.1 — 入口 + CLI 参数解析
+自动关机工具 v3.0 — 入口 + CLI 参数解析（深色任务控制台 + 轮转日志系统）
 
 CLI 参数:
   X, S            关闭电脑（可带 /t=秒 倒计时）
@@ -20,6 +20,8 @@ CLI 参数:
 import os
 import sys
 import time
+import logging
+import ctypes
 
 # 确保项目根目录在 sys.path 中（打包后不需要）
 if not getattr(sys, 'frozen', False):
@@ -32,37 +34,58 @@ from core.actions import (
     sleep, monitor_off, run_program, play_sound, show_message,
     set_main_tk,
 )
-from core.common import write_log, strip_quotes, get_log_path
+from core.common import get_log_path, strip_quotes, format_seconds
 from core.config import Config
+from core.logger import setup_logging, get_logger, audit, set_level
 from core.timer_engine import TimerEngine
+
+APP_VERSION = "v3.0"
+log = get_logger("main")
+
+
+def _global_exception_handler(exc_type, exc_value, exc_traceback):
+    """全局未捕获异常处理器 — 防止程序静默崩溃"""
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    logging.critical("发生未捕获的异常", exc_info=(exc_type, exc_value, exc_traceback))
+    print(f"严重错误: {exc_value}", file=sys.stderr)
+    print(f"日志: {get_log_path()}", file=sys.stderr)
+
+
+def _ensure_single_instance():
+    """确保只有一个实例运行（Windows 命名互斥体）"""
+    mutex_name = "AutoShutdownTool_v3_Mutex"
+    try:
+        ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
+        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            log.error("程序已在运行中，本次启动退出")
+            print("程序已在运行中", file=sys.stderr)
+            sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception:
+        pass
 
 
 def parse_args(argv=None):
     """
     解析命令行参数
-    返回: (action_index, params_dict)
-    params_dict 包含:
-        - action: 操作索引或 None
-        - t: 倒计时秒数 (int, 默认 0)
-        - w: 不自动开始倒计时 (bool)
-        - min: 启动最小化 (bool)
-        - rp_path: 运行程序路径
-        - ra_path: 播放声音路径
-        - m_text: 消息文本
+    返回: params_dict，包含 action/action_func/t/w/min/rp_path/ra_path/m_text
     """
     if argv is None:
         argv = sys.argv[1:]
 
     result = {
-        'action': None,     # 操作索引或 None
-        'action_func': None, # 直接可调用的函数
-        't': 0,             # 倒计时秒数
-        'w': False,         # 不自动开始
-        'min': False,       # 最小化启动
-        'rp_path': '',      # 运行程序路径
-        'rp_args': '',      # 运行程序参数
-        'ra_path': '',      # 播放声音路径
-        'm_text': '',       # 消息文本
+        'action': None,      # 操作索引或 None
+        'action_func': None,  # 直接可调用的函数
+        't': 0,              # 倒计时秒数
+        'w': False,          # 不自动开始
+        'min': False,        # 最小化启动
+        'rp_path': '',       # 运行程序路径
+        'rp_args': '',       # 运行程序参数
+        'ra_path': '',       # 播放声音路径
+        'm_text': '',        # 消息文本
     }
 
     # CLI 操作映射
@@ -77,48 +100,37 @@ def parse_args(argv=None):
     while i < len(argv):
         arg = argv[i]
 
-        # 处理 /t=秒
         if arg.startswith('/t='):
             try:
                 result['t'] = int(arg[3:])
             except ValueError:
                 result['t'] = 0
-        # 处理 /w
         elif arg == '/w':
             result['w'] = True
-        # 处理 /min
         elif arg == '/min':
             result['min'] = True
-        # 处理 /sm (睡眠)
         elif arg == '/sm':
             result['action'] = 3
             result['action_func'] = sleep
-        # 处理 /som (关闭显示器)
         elif arg == '/som':
             result['action'] = 4
             result['action_func'] = monitor_off
-        # 处理 /rp=path (运行程序)
         elif arg.startswith('/rp='):
-            path = arg[4:]
-            path = strip_quotes(path)
+            path = strip_quotes(arg[4:])
             result['action'] = 5
             result['rp_path'] = path
-            # Bug B 修复: CLI 不支持 rp_args，直接传空字符串
             result['action_func'] = lambda p=path: run_program(p)
-        # 处理 /ra=path (播放声音)
         elif arg.startswith('/ra='):
-            path = arg[4:]
-            path = strip_quotes(path)
+            path = strip_quotes(arg[4:])
             result['action'] = 6
             result['ra_path'] = path
             result['action_func'] = lambda p=path: play_sound(p)
-        # 处理 /m=text (弹出消息)
         elif arg.startswith('/m='):
             text = arg[3:]
             result['action'] = 7
             result['m_text'] = text
             result['action_func'] = lambda t=text: show_message(t)
-        # 处理 /rp 或 /ra 或 /m 带参数在下一个参数（老风格）
+        # /rp /ra /m 带参数在下一个参数（老风格）
         elif arg == '/rp' and i + 1 < len(argv):
             i += 1
             p = argv[i]
@@ -137,7 +149,6 @@ def parse_args(argv=None):
             result['action'] = 7
             result['m_text'] = t
             result['action_func'] = lambda text=t: show_message(text)
-        # 处理 X, S, R, L
         elif arg.upper() in cli_actions:
             result['action'] = cli_actions[arg.upper()]
             idx = cli_actions[arg.upper()]
@@ -155,14 +166,10 @@ def parse_args(argv=None):
 
 
 def cli_mode(params):
-    """
-    CLI 模式执行
-    如果有操作且没有倒计时，立即执行
-    如果有操作且有倒计时，启动倒计时后执行
-    """
+    """CLI 模式执行（全程记录日志）"""
     action_idx = params['action']
     t_seconds = params['t']
-    no_auto = params['w']
+    action_name = ACTION_MAP.get(action_idx, ('未知',))[0]
 
     if action_idx is None:
         print("错误: 未指定操作", file=sys.stderr)
@@ -170,133 +177,109 @@ def cli_mode(params):
         print("操作: X/S=关机 R=重启 L=注销 /sm=睡眠 /som=关显示器 /rp=运行 /ra=播放 /m=消息", file=sys.stderr)
         sys.exit(1)
 
-    action_func = params['action_func']
-    if action_func is None:
-        action_func = lambda: execute_action(action_idx)
+    action_func = params['action_func'] or (lambda: execute_action(action_idx))
+    audit("CLI 模式", 操作=action_name, 倒计时=t_seconds)
 
     if t_seconds > 0:
-        # 有倒计时
-        print(f"操作: {ACTION_MAP.get(action_idx, ('未知',))[0]}")
+        print(f"操作: {action_name}")
         print(f"倒计时: {t_seconds} 秒")
+        if params['w']:
+            print("提示: /w 参数在 CLI 模式下无效，倒计时将自动开始")
 
-        if no_auto:
-            print("提示: /w 参数已设置，倒计时不会自动开始（GUI 模式才有效）")
-            print("CLI 模式将自动开始倒计时...")
-
-        # 显示倒计时
         for remaining in range(t_seconds, 0, -1):
-            mins, secs = divmod(remaining, 60)
-            hours, mins = divmod(mins, 60)
-            days, hours = divmod(hours, 24)
-            if days > 0:
-                time_str = f"{days}天 {hours:02d}:{mins:02d}:{secs:02d}"
-            elif hours > 0:
-                time_str = f"{hours:02d}:{mins:02d}:{secs:02d}"
-            else:
-                time_str = f"{mins:02d}:{secs:02d}"
-            print(f"\r剩余 {time_str}  ", end="", flush=True)
+            print(f"\r剩余 {format_seconds(remaining)}  ", end="", flush=True)
             time.sleep(1)
 
         print("\n正在执行操作...")
-        if action_func:
-            action_func()
-        else:
-            execute_action(action_idx)
+        audit("CLI 倒计时结束", 操作=action_name)
+        action_func()
         print("操作完成")
     else:
-        # 立即执行
-        print(f"正在执行: {ACTION_MAP.get(action_idx, ('未知',))[0]}")
-        if action_func:
-            action_func()
-        else:
-            execute_action(action_idx)
+        print(f"正在执行: {action_name}")
+        action_func()
         print("操作完成")
+
+    # /m 模式的气泡通知在后台线程展示，等待其结束再退出
+    if action_idx == 7:
+        try:
+            from core.tray import wait_balloons
+            wait_balloons(timeout=12)
+        except Exception:
+            pass
 
 
 def main():
-    """主入口"""
-    # P1 修复: 高 DPI 屏幕模糊 — 声明系统级 DPI 感知，Tk 按缩放因子自动放大字体
-    try:
-        import ctypes
-        try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(1)  # Win 8.1+ / Win11
-        except Exception:
-            ctypes.windll.user32.SetProcessDPIAware()  # Win 7 兜底
-    except Exception:
-        pass
+    """主入口：日志系统最先初始化"""
+    setup_logging(os.environ.get("ASD_LOG_LEVEL", "INFO"))
+    log.info("========== 自动关机工具 %s 启动 ==========", APP_VERSION)
+    sys.excepthook = _global_exception_handler
 
-    # 解析命令行参数
+    _ensure_single_instance()
+
     params = parse_args()
+    log.info("命令行参数: %r", sys.argv[1:])
 
     if params['action'] is not None:
-        # CLI 模式
         cli_mode(params)
-    else:
-        # GUI 模式
+        return
+
+    # GUI 模式
+    try:
+        from ui.main_window import MainWindow
+        app = MainWindow()
+        # 把主 Tk 注入 actions，让定时线程在主线程上弹窗（不创建额外 Tk）
         try:
-            from ui.main_window import MainWindow
-            app = MainWindow()
-            # Bug P0 修复: 把主 Tk 注入 actions，让定时线程在主线程上弹窗（不创建额外 Tk）
-            try:
-                set_main_tk(app.root)
-            except Exception:
-                pass
+            set_main_tk(app.root)
+        except Exception:
+            pass
 
-            # 如果指定了 /min，启动后最小化
-            if params['min']:
-                app.root.after(200, app._minimize_to_tray)
+        # /min 参数或设置项 → 启动后最小化到托盘
+        start_minimized = params['min'] or (
+            params['action'] is None
+            and app.config.getboolean('General', 'start_minimized', False)
+        )
+        if start_minimized:
+            app.root.after(400, app._minimize_to_tray)
 
-            # 如果指定了 /t，预设倒计时
-            if params['t'] > 0:
-                # 解析秒数为天/时/分/秒并在界面中设置
-                t = params['t']
-                days = t // 86400
-                t %= 86400
-                hours = t // 3600
-                t %= 3600
-                mins = t // 60
-                secs = t % 60
-                app.timer_mode_var.set("countdown")
-                app._on_timer_mode_changed()
-                app.spin_days.delete(0, "end")
-                app.spin_days.insert(0, str(days))
-                app.spin_hours.delete(0, "end")
-                app.spin_hours.insert(0, str(hours))
-                app.spin_mins.delete(0, "end")
-                app.spin_mins.insert(0, str(mins))
-                app.spin_secs.delete(0, "end")
-                app.spin_secs.insert(0, str(secs))
+        # /t 预设倒计时
+        if params['t'] > 0:
+            t = params['t']
+            days, t = divmod(t, 86400)
+            hours, t = divmod(t, 3600)
+            mins, secs = divmod(t, 60)
+            app.timer_mode_var.set("countdown")
+            app._on_timer_mode_changed()
+            app.spin_days.delete(0, "end")
+            app.spin_days.insert(0, str(days))
+            app.spin_hours.delete(0, "end")
+            app.spin_hours.insert(0, str(hours))
+            app.spin_mins.delete(0, "end")
+            app.spin_mins.insert(0, str(mins))
+            app.spin_secs.delete(0, "end")
+            app.spin_secs.insert(0, str(secs))
 
-                # 除非指定了 /w，否则自动开始倒计时
-                if not params['w'] and params['action'] is not None:
-                    # Bug A 修复: 将 CLI 参数同步到 GUI 控件
-                    if params['action'] == 5 and params['rp_path']:
-                        app.entry_prog_path.delete(0, "end")
-                        app.entry_prog_path.insert(0, params['rp_path'])
-                    elif params['action'] == 6 and params['ra_path']:
-                        app.entry_sound_path.delete(0, "end")
-                        app.entry_sound_path.insert(0, params['ra_path'])
-                    elif params['action'] == 7 and params['m_text']:
-                        app.text_msg.delete("1.0", "end")
-                        app.text_msg.insert("1.0", params['m_text'])
-                    # 设置操作并触发界面更新
-                    app.action_var.set(params['action'])
-                    app._on_action_changed()
-                    # Bug C 修复: /sm 和 /som 可直接用 action_func 执行（倒计时已走完）
-                    # 自动开始
-                    app.root.after(500, app._on_start_timer)
+            if not params['w'] and params['action'] is not None:
+                # CLI 参数同步到 GUI 控件后自动开始
+                if params['action'] == 5 and params['rp_path']:
+                    app.entry_prog_path.delete(0, "end")
+                    app.entry_prog_path.insert(0, params['rp_path'])
+                elif params['action'] == 6 and params['ra_path']:
+                    app.entry_sound_path.delete(0, "end")
+                    app.entry_sound_path.insert(0, params['ra_path'])
+                elif params['action'] == 7 and params['m_text']:
+                    app.text_msg.delete("1.0", "end")
+                    app.text_msg.insert("1.0", params['m_text'])
+                app.action_var.set(params['action'])
+                app._on_action_changed()
+                app.root.after(500, app._on_start_timer)
 
-            app.run()
-        except Exception as e:
-            import traceback
-            err_msg = f"启动GUI异常: {e}\n\n{traceback.format_exc()}"
-            log_path = get_log_path()
-            write_log("启动GUI异常", e)
-            print(f"错误: {e}", file=sys.stderr)
-            print(f"日志: {log_path}", file=sys.stderr)
-            # 回退到 CLI 模式
-            print(f"无法启动图形界面: {e}", file=sys.stderr)
-            sys.exit(1)
+        app.run()
+    except Exception as e:
+        import traceback
+        log.critical("启动 GUI 异常\n%s", traceback.format_exc())
+        print(f"错误: {e}", file=sys.stderr)
+        print(f"日志: {get_log_path()}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
