@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>定时关机</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div class="ambient" aria-hidden="true">
+  <span class="blob a"></span><span class="blob b"></span><span class="blob c"></span>
+</div>
+
+<div class="app">
+  <!-- ================= 标题栏 ================= -->
+  <header class="titlebar pywebview-drag-region">
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#08101a" stroke-width="2.2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3v9" />
+          <path d="M6.2 6.5a8 8 0 1 0 11.6 0" />
+        </svg>
+      </div>
+      <div style="min-width:0">
+        <div class="ttl">定时关机</div>
+        <div class="sub" id="subtitle">准备就绪</div>
+      </div>
+    </div>
+    <div class="winbtns">
+      <button class="wc" id="btn-min" title="最小化">–</button>
+      <button class="wc close" id="btn-close" title="关闭">✕</button>
+    </div>
+  </header>
+
+  <!-- ================= 主体 ================= -->
+  <main class="main">
+    <!-- 左列 -->
+    <section class="col left">
+      <!-- 主控 -->
+      <div class="card">
+        <div class="hero">
+          <div class="ringwrap">
+            <div class="ring" id="ring" style="--p:0"></div>
+            <div class="ringcore"></div>
+            <div class="ringtext">
+              <div class="clock idle" id="clock">00:00:00</div>
+              <div class="clockcap" id="clockcap">未开始</div>
+            </div>
+          </div>
+
+          <div class="heroinfo">
+            <div class="statline">
+              <span class="statdot off" id="statdot"></span>
+              <span id="status">准备就绪</span>
+            </div>
+            <div class="target" id="target"></div>
+            <div class="actions-row">
+              <button class="btn primary" id="btn-start">开始计时</button>
+              <button class="btn" id="btn-pause" disabled>暂停</button>
+              <button class="btn danger" id="btn-stop" disabled>停止</button>
+            </div>
+            <div class="hint" id="hint">选好时间与操作后点「开始计时」</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 触发时间 -->
+      <div class="card grow">
+        <div class="card-title"><span class="dotmark"></span>触发时间</div>
+
+        <div class="seg" id="seg-mode">
+          <button data-mode="countdown" class="on">倒计时</button>
+          <button data-mode="at_time">指定时间</button>
+          <button data-mode="periodic">每周循环</button>
+        </div>
+
+        <!-- 倒计时 -->
+        <div id="pane-countdown">
+          <div class="numpanel">
+            <div class="numfield"><input class="num" id="cd-h" value="0" maxlength="3" inputmode="numeric" /><span class="cap">时</span></div>
+            <div class="numsep">:</div>
+            <div class="numfield"><input class="num" id="cd-m" value="0" maxlength="2" inputmode="numeric" /><span class="cap">分</span></div>
+            <div class="numsep">:</div>
+            <div class="numfield"><input class="num" id="cd-s" value="30" maxlength="2" inputmode="numeric" /><span class="cap">秒</span></div>
+          </div>
+          <div class="quick" id="quick">
+            <button class="chip" data-sec="300">5 分钟</button>
+            <button class="chip" data-sec="600">10 分钟</button>
+            <button class="chip" data-sec="1800">30 分钟</button>
+            <button class="chip" data-sec="3600">1 小时</button>
+            <button class="chip" data-sec="7200">2 小时</button>
+          </div>
+        </div>
+
+        <!-- 指定时间 -->
+        <div id="pane-at" class="hidden">
+          <div class="numpanel">
+            <div class="numfield"><input class="num wide" id="at-y" maxlength="4" inputmode="numeric" /><span class="cap">年</span></div>
+            <div class="numfield"><input class="num" id="at-mo" maxlength="2" inputmode="numeric" /><span class="cap">月</span></div>
+            <div class="numfield"><input class="num" id="at-d" maxlength="2" inputmode="numeric" /><span class="cap">日</span></div>
+            <div class="numsep">:</div>
+            <div class="numfield"><input class="num" id="at-h" maxlength="2" inputmode="numeric" /><span class="cap">时</span></div>
+            <div class="numfield"><input class="num" id="at-mi" maxlength="2" inputmode="numeric" /><span class="cap">分</span></div>
+            <div class="numfield"><input class="num" id="at-s" maxlength="2" inputmode="numeric" /><span class="cap">秒</span></div>
+          </div>
+        </div>
+
+        <!-- 每周循环 -->
+        <div id="pane-week" class="hidden">
+          <div class="weeks" id="weeks">
+            <button class="wk" data-wd="0">一</button>
+            <button class="wk" data-wd="1">二</button>
+            <button class="wk" data-wd="2">三</button>
+            <button class="wk" data-wd="3">四</button>
+            <button class="wk" data-wd="4">五</button>
+            <button class="wk" data-wd="5">六</button>
+            <button class="wk" data-wd="6">日</button>
+          </div>
+          <div class="numpanel" style="margin-top:12px">
+            <div class="numfield"><input class="num" id="wk-h" value="23" maxlength="2" inputmode="numeric" /><span class="cap">时</span></div>
+            <div class="numsep">:</div>
+            <div class="numfield"><input class="num" id="wk-m" value="00" maxlength="2" inputmode="numeric" /><span class="cap">分</span></div>
+            <div class="numsep">:</div>
+            <div class="numfield"><input class="num" id="wk-s" value="00" maxlength="2" inputmode="numeric" /><span class="cap">秒</span></div>
+          </div>
+        </div>
+
+        <div class="hint" id="modehint" style="margin-top:10px">到点后执行选定的操作</div>
+      </div>
+    </section>
+
+    <!-- 右列 -->
+    <section class="col right">
+      <!-- 操作 -->
+      <div class="card grow">
+        <div class="card-title"><span class="dotmark"></span>执行操作<span class="spacer"></span>
+          <span class="hint" id="op-hint"></span>
+        </div>
+        <div class="ops" id="ops"></div>
+
+        <div class="param hide" id="param">
+          <div class="plabel" id="plabel">程序路径</div>
+          <div class="prow">
+            <input class="textin" id="pinput" placeholder="点击右侧浏览选择…" />
+            <button class="btn small" id="pbtn">浏览</button>
+          </div>
+          <textarea class="textin hidden" id="ptext" placeholder="要弹出的消息内容…"></textarea>
+        </div>
+      </div>
+
+      <!-- 设置 -->
+      <div class="card">
+        <div class="card-title"><span class="dotmark"></span>设置</div>
+
+        <label class="switch">
+          <input type="checkbox" id="set-tray" />
+          <span class="track"></span>
+          <span class="stxt">关闭窗口时最小化到托盘<span class="sdesc">真正退出请用托盘右键菜单</span></span>
+        </label>
+
+        <label class="switch">
+          <input type="checkbox" id="set-force" />
+          <span class="track"></span>
+          <span class="stxt">关机/重启前强制关闭程序<span class="sdesc">关闭后由 Windows 拦截未保存的文档</span></span>
+        </label>
+
+        <label class="switch">
+          <input type="checkbox" id="set-sound" />
+          <span class="track"></span>
+          <span class="stxt">最后 10 秒提示音</span>
+        </label>
+
+        <label class="switch">
+          <input type="checkbox" id="set-startup" />
+          <span class="track"></span>
+          <span class="stxt">开机自动启动</span>
+        </label>
+
+        <div class="foot">
+          <button class="btn small ghost" id="btn-log">打开日志</button>
+          <button class="btn small ghost" id="btn-cfg">配置文件</button>
+          <span class="spacer"></span>
+          <span class="hint" id="ver"></span>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<script src="app.js"></script>
+</body>
+</html>
