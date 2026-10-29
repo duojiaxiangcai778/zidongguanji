@@ -3,7 +3,8 @@
 Windows 定时任务工具（关机 / 重启 / 注销 / 睡眠 / 关屏 / 运行程序 / 播放声音 / 弹消息），
 界面是 pywebview + WebView2 渲染的 **液态玻璃** 风格，与「外设电量守护」同源配色。
 
-- **v4.0**（2026-10-29）界面整体重写，从 tkinter 迁移到 HTML/CSS/JS
+- **v4.0.1**（2026-10-29）界面整体重写，从 tkinter 迁移到 HTML/CSS/JS；
+  v4.0.1 修掉了「双击启动卡死（未响应）」—— 原因见下方「为什么不用 pywebview 的 js_api」
 - 保留完整 CLI 通道，行为与 v3.0 完全一致，可用于脚本 / 自动化调用
 - 开源仓库：<https://github.com/duojiaxiangcai778/zidongguanji>
 
@@ -56,11 +57,24 @@ Windows 定时任务工具（关机 / 重启 / 注销 / 睡眠 / 关屏 / 运行
 
 ### 为什么不用 pywebview 的 js_api
 
-pywebview 6.x 的 `js_api` 依赖它内置的 HTTP 服务，而**只有窗口 url 是本地文件路径时**
-才会启动这个服务。一旦 `create_window(url="http://...")`，`window.pywebview.api`
-就是个空对象 —— 所有方法都缺失，前端报 `api.init is not a function`。
+**第一条（会直接卡死程序）**：`create_window(js_api=api)` 这个参数一传，pywebview 就会调
+`util.get_functions(js_api)` **递归反射遍历整个对象图**：
 
-更麻烦的是：在 GUI 线程里同步调用 `window.evaluate_js()` 会和 WebView2 的消息泵互锁，
+```
+Api.app → .window → .native(.NET WebView2 控件) → .AccessibilityObject...Font.Style.Bold.Bold.Bold...
+```
+
+`.Bold` 取到的对象自身还有 `.Bold`，属性链无限套娃 → 递归爆栈（实测刷了 39 条
+`maximum recursion depth exceeded`），每一跳跨一次 COM 且大量发生在非 UI 线程，
+GUI 线程被彻底占死 → Windows 报「应用程序没有响应」。
+
+**结论：不用 js_api 就绝对不要传这个参数**，不是「没用到所以无害」。
+
+**第二条（注入了也是空对象）**：pywebview 6.x 的 `js_api` 依赖它内置的 HTTP 服务，
+而**只有窗口 url 是本地文件路径时**才会启动这个服务。一旦 `create_window(url="http://...")`，
+`window.pywebview.api` 就是个空对象 —— 前端报 `api.init is not a function`。
+
+**第三条**：在 GUI 线程里同步调用 `window.evaluate_js()` 会和 WebView2 的消息泵互锁，
 窗口直接卡死；从其它线程调用则可能让进程崩溃。
 
 所以本项目改成：自己在 `127.0.0.1:随机端口` 起一套 `静态文件 + /api/*` 服务，
@@ -159,6 +173,8 @@ py -3.11 -m venv .venv
 - ✅ CLI 通道回归验证（`/rp=` 启动 notepad 成功，且不弹 GUI）
 - ✅ 清理冗余：删除重复 exe、build/dist、10 张调试截图、旧 `_ui_smoke` 等，省 74.6 MB
 - ✅ 旧 tkinter 版归档到 `archive/`，源码保留
+- ✅ **v4.0.1 修复双击启动卡死**：删掉 `create_window(js_api=...)`，
+  源码版 / 打包版 / 真实双击三种场景均 `Responding=True`、日志 0 ERROR
 
 **已知问题**
 

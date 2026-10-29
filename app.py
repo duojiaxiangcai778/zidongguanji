@@ -30,7 +30,7 @@ import threading
 import datetime
 import traceback
 
-APP_VERSION = "v4.0"
+APP_VERSION = "v4.0.1"
 APP_NAME = "定时关机"
 
 FROZEN = bool(getattr(sys, "frozen", False))
@@ -870,10 +870,16 @@ def main():
 
     width, height, x, y = app._load_geometry()
     port = start_frontend_server(WEB_DIR, api)
+    # 注意：绝对不能传 js_api=api。
+    # pywebview 会调用 util.get_functions(js_api) 递归反射遍历对象的全部属性，
+    # 而 Api.app.window.native 指向 .NET 的 WebView2 控件：
+    #   window.native.AccessibilityObject.Owner.ActiveControl.Font.Style.Bold.Bold.Bold...
+    # `.Bold` 返回的对象仍有 `.Bold`，于是无限递归、每次跨一次 COM，
+    # 直接把 GUI 线程占死 → Windows 报「应用程序没有响应」。
+    # 本项目的前后端走自建 HTTP 接口，完全不需要 js_api。
     kwargs = dict(
         title=APP_NAME,
         url=f"http://127.0.0.1:{port}/index.html",
-        js_api=api,
         width=width,
         height=height,
         min_size=(980, 660),

@@ -1,5 +1,40 @@
 # 自动关机工具 更新日志
 
+## v4.0.1 (2026-10-29) — 紧急修复：双击启动「应用程序没有响应」
+
+### 现象
+双击桌面 `定时关机.lnk` 后界面完整渲染出来，但窗口整体假死，Windows 弹出「应用程序没有响应」。
+
+### 根因
+`webview.create_window(..., js_api=api)` **仍然传了 `js_api`**。
+
+pywebview 在初始化窗口时会调 `util.get_functions(window._js_api)`（`util.py:180-214`）
+**递归反射遍历** api 对象的全部公开属性：
+
+```
+Api.app(ShutdownApp) → .window(pywebview Window) → .native(.NET WebView2 控件)
+→ .AccessibilityObject.Owner.ActiveControl.Font.Style.Bold.Bold.Bold.Bold...
+```
+
+`.Bold` 取到的对象自身还有 `.Bold`，属性链无限套娃 → 递归爆栈（39 条
+`maximum recursion depth exceeded`），每一跳都要跨一次 COM 且大量发生在非 UI 线程
+（`CoreWebView2Controller members can only be accessed from the UI thread`），
+GUI 线程被彻底占死。
+
+**关键认知**：改用自建 HTTP 接口后 `js_api` 已经没有任何用途，但只要参数还传着，
+pywebview 就一定会去反射它 —— 不是「没用到所以无害」。
+
+### 修复
+`app.py` 的 `create_window(**kwargs)` 里删掉 `js_api=api`，并加注释防止以后再传回去。
+
+### 验证
+| 场景 | 结果 |
+|------|------|
+| 源码版启动 | `Responding=True`，本次运行 8 行日志 / 0 ERROR / 0 recursion（修复前 39 条递归错误） |
+| 打包版 + 环境变量定位 | `Responding=True`，8 行 / 0 ERROR |
+| **打包版真实双击（无任何环境变量）** | `Responding=True`，7 行 / 0 ERROR |
+| 倒计时交互 | API 起 45 秒 → UI 上 `00:42` 实时递减、环形进度弧正常、按钮禁用态正确 |
+
 ## v4.0 (2026-10-29) — 界面整体重写为液态玻璃（tkinter → pywebview/WebView2）
 
 ### 一、UI 重写（全新前端）
