@@ -30,7 +30,7 @@ import threading
 import datetime
 import traceback
 
-APP_VERSION = "v4.0.1"
+APP_VERSION = "v4.0.2"
 APP_NAME = "定时关机"
 
 FROZEN = bool(getattr(sys, "frozen", False))

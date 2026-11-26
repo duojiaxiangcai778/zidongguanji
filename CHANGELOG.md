@@ -1,5 +1,110 @@
 # 自动关机工具 更新日志
 
+## 2026-11-21 — 新增 MCP 服务（不改 exe 版本号）
+
+### 做了什么
+
+新增 `mcp/server.py`：把本工具的 8 种操作 + 定时能力包成标准 MCP 服务（stdio JSON-RPC 2.0），
+供 DSH / Claude / Cursor 等任意 MCP 客户端直接调用，不用再 shell 里敲 exe。
+
+**10 个工具**：`power`（关机/重启/注销/睡眠/关屏，立即或延迟）、
+`schedule`（一次/每天/每周，kind = power/notify/run_program/play_sound）、`list_tasks`、
+`cancel_task`、`cancel_shutdown`、`notify`、`run_program`、`play_sound`、`status`、`open_gui`。
+
+### 关键做法
+
+- **进程内 `import core.actions` 直调**，不 spawn exe。同一份代码、同一个 `logs\app.log`、
+  同一套 `safe_close_windows`，毫秒级；CLI 的 `/t` 是阻塞打印剩余秒数的，包装它会让一个 10 分钟
+  定时占住 RPC 十几分钟，因此放弃。
+- **自带调度线程**（0.5s 轮询）+ `mcp/tasks.json` 原子落盘，宿主重启自动恢复；
+  不依赖 GUI 的 tkinter `timer_engine`（那是 Tk 线程，MCP 进程里没有 Tk）。
+- **零依赖**，纯标准库；`--selftest` 不需要宿主就能跑一遍。
+
+### 修的三个坑
+
+| 坑 | 现象 | 修法 |
+|---|---|---|
+| Windows 管道默认 GBK | 中文 JSON 编成 GBK 字节，宿主 `tools/list` 整批失败，连接显示"目标服务拒绝连接" | `sys.stdout.buffer.write(...encode("utf-8"))`；读入也走 buffer + UTF-8/GBK 兜底 |
+| `status` 里跑 `shutdown /a` | 只读接口却会撤销用户排队的关机（有副作用） | `status` 不再探测，撤销统一归 `cancel_shutdown` |
+| `cancel_shutdown` 把 1116 当失败 | 本来没排队时返回 `ok:false` | `ok = code in (0, 1116)` |
+
+### 接入 DSH
+
+`dsh-mcp-connector` 插件（不手改 `cordis.patch.yml`）配置 stdio：
+`serverName=auto-power`、`E:\自动关机工具\.venv\Scripts\python.exe E:\自动关机工具\mcp\server.py`。
+落库 `<DSH_HOME>\storages\mcp_connector.json` → `tables.connections["custom-auto-power"]`，
+`injectionMode: always`，工具名 `mcp__auto-power__*`。
+
+### 验证
+
+| 项 | 方式 | 结果 |
+|---|---|---|
+| JSON-RPC 探针 | `%TEMP%\mcp_probe_auto_power.py` 直拉 server.py | **12/12 PASS**（discover/initialize/tools-list/status/schedule/list/定时真触发/取消/notify/cancel_shutdown/未知方法/未知工具） |
+| 真机调用 | DSH 会话里调 `mcp__auto-power__*` | `status` 返回 JSON；`schedule` +45s 后 `list_tasks` 变 `done`，`logs/app.log` 有 `触发任务 31ab2b3ed6` |
+| 关屏 | `power{action:monitor_off}` | `ok:true`，日志 `已广播关闭显示器消息`，屏幕实际变黑（可恢复） |
+| 延迟关机 | `power{action:shutdown, delay_seconds:600}` | 落任务 `196d675be0`（due 08:52:52），随即 `cancel_task` 撤销 |
+| 每日循环 | `schedule{action:sleep, at:23:30, daily:true}` | 落任务 `c3b1aa3195`，`repeat.mode=daily`，随即撤销 |
+| 撤销系统关机 | `cancel_shutdown` | `ok:true, exit_code:1116`（本来没排队） |
+| 清空任务 | `cancel_task{all_pending:true}` | `tasks.json` 变 `[]` |
+
+**全程没有真的关机 / 重启 / 睡眠**，只用了关屏（可见可恢复）+ 弹性延迟任务（立刻撤销）。
+
+### 其他改动
+
+- `<DSH_HOME>\skills\host-power\SKILL.md`：优先级反转，首选 `mcp__auto-power__*`，MCP 不在才退回 exe CLI；补工具速查表与示例。
+- `.gitignore` 忽略 `mcp/tasks.json`（每台机器各一份，不入库）。
+- README 增加「MCP 服务」章节 + 目录结构 + 当前状态。
+
+### 已知限制
+
+1. MCP 进程由宿主拉起，**DSH 退出后定时不再触发**；再启动会补跑已过期任务（不丢）。要"关掉 DSH 也照样准时关机"得用 GUI 定时或 Windows 任务计划。
+2. MCP 与 GUI 可同时运行，两边各下一次同条关机指令会各执行一次（第二次通常是 1190 噪音）。
+3. `cancel_task` 只取消本 MCP 服务的任务，GUI 里建的定时不在此列。
+
+### 未做
+
+- 没打包成 exe（MCP 用 venv python 跑源码，改一行即时生效，比重新打包 16MB 更合适）。
+- 没动 `app.py` / `定时关机.exe`，所以**版本号仍是 v4.0.2**。
+
+详细留痕：`工作记录\2026-11-21-MCP服务.md`。
+
+## v4.0.2 (2026-10-29) — 自定义程序图标
+
+### 做了什么
+新画了一个液态玻璃风格的图标，替掉 PyInstaller 默认图标：
+
+- 深色玻璃圆角底（`#0b1017` 渐变到 `#121b28`）+ 青色径向光晕
+- 电源符号：青→紫对角渐变的 C 形环 + 缺口处一条圆头竖线（环两端也补了圆头，
+  否则断口是直角切面会显得断层）
+- 7 个尺寸一次性打包进 ICO：16 / 24 / 32 / 48 / 64 / 128 / 256
+
+### 关键做法：小尺寸单独渲染，不是缩放
+直接在 16 px 用 1024 画布缩下去会糊成一团（环和竖线粘死）。所以分了三套预设：
+
+| 预设 | 尺寸 | 环宽 | 缺口半角 | 光晕/高光 |
+|------|------|------|----------|-----------|
+| `std` | ≥48 px | 90 | 21° | 有 |
+| `bold` | 32 px | 112 | 27° | 弱 |
+| `tiny` | 16/24 px | 130 | 40° | 无 |
+
+ICO 文件是自己按格式拼的（`ICONDIR` + `ICONDIRENTRY` + 各尺寸 PNG 数据），
+因为 Pillow 的 `save(sizes=...)` 只接受一张源图统一缩放，塞不进不同渲染的图。
+
+### 新增文件
+- `assets/icon.ico`（7 尺寸，74 KB）、`assets/icon-256.png`、`assets/icon-512.png`
+- `assets/preview-16/24/32.png` — 小尺寸放大 8 倍的检查图
+- `tools/make_icon.py` — 生成脚本，可重复运行
+
+### 其他改动
+- `定时关机.spec` 的 `icon` 从绝对路径改成相对 `assets/icon.ico`，换机器也能打包
+- 托盘/任务栏/标题栏图标不用单独做：`core/tray.py` 用 `ExtractIconExW(exe, 0, ...)`
+  从 exe 取图标，自动跟随
+
+### 验证
+- `System.Drawing.Icon::ExtractAssociatedIcon(定时关机.exe)` 提取出 32×32 图标，
+  内容与生成的 32 px 一致
+- 重新打包后 `定时关机.exe` 16.5 MB 启动正常（`Responding=True`，日志 0 ERROR）
+
 ## v4.0.1 (2026-10-29) — 紧急修复：双击启动「应用程序没有响应」
 
 ### 现象
