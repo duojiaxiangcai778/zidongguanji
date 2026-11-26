@@ -52,14 +52,14 @@ const state = {
 };
 
 const ACTIONS = [
-  { key: 'shutdown',    ico: '⏻', name: '关闭电脑',   desc: 'shutdown /s' },
-  { key: 'restart',     ico: '↻', name: '重启电脑',   desc: 'shutdown /r' },
-  { key: 'logoff',      ico: '⎋', name: '注销电脑',   desc: '注销当前用户' },
-  { key: 'sleep',       ico: '☾', name: '睡眠模式',   desc: '进入系统睡眠' },
-  { key: 'monitor_off', ico: '▣', name: '关闭显示器', desc: '只关屏不锁系统' },
-  { key: 'run_program', ico: '▶', name: '运行程序',   desc: '启动 exe / 文件' },
-  { key: 'play_sound',  ico: '♪', name: '播放声音',   desc: '播放音频文件' },
-  { key: 'message',     ico: '✦', name: '弹出消息',   desc: '托盘气泡通知' },
+  { key: 'shutdown',    ico: '<svg viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M6.2 6.6a8 8 0 1 0 11.6 0"/></svg>', name: '关闭电脑',   desc: 'shutdown /s' },
+  { key: 'restart',     ico: '<svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v5h-5"/></svg>', name: '重启电脑',   desc: 'shutdown /r' },
+  { key: 'logoff',      ico: '<svg viewBox="0 0 24 24"><path d="M14 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4"/><path d="M10 12H3"/><path d="M6 9l-3 3 3 3"/></svg>', name: '注销电脑',   desc: '注销当前用户' },
+  { key: 'sleep',       ico: '<svg viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>', name: '睡眠模式',   desc: '进入系统睡眠' },
+  { key: 'monitor_off', ico: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/><path d="M3 3l18 18"/></svg>', name: '关闭显示器', desc: '只关屏不锁系统' },
+  { key: 'run_program', ico: '<svg viewBox="0 0 24 24"><path d="M14 4h6v6"/><path d="M20 4l-8 8"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>', name: '运行程序',   desc: '启动 exe / 文件' },
+  { key: 'play_sound',  ico: '<svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M17 8.5a4.5 4.5 0 0 1 0 7"/></svg>', name: '播放声音',   desc: '播放音频文件' },
+  { key: 'message',     ico: '<svg viewBox="0 0 24 24"><path d="M20 12a7 7 0 0 1-7 7H9l-4 3v-4.6A7 7 0 0 1 13 5a7 7 0 0 1 7 7z"/></svg>', name: '弹出消息',   desc: '托盘气泡通知' },
 ];
 
 const HINTS = {

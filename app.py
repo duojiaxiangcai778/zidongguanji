@@ -30,7 +30,7 @@ import threading
 import datetime
 import traceback
 
-APP_VERSION = "v4.0.2"
+APP_VERSION = "v4.1.0"
 APP_NAME = "定时关机"
 
 FROZEN = bool(getattr(sys, "frozen", False))
@@ -178,6 +178,53 @@ def _dispatch(api, name, arg):
         return fn()
 
 
+_WALLPAPER_CACHE = {"mtime": None, "data": None, "ctype": "image/jpeg"}
+
+
+def wallpaper_path():
+    """读当前桌面壁纸路径（HKCU\\Control Panel\\Desktop\\WallPaper）。"""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop") as k:
+            v, _ = winreg.QueryValueEx(k, "WallPaper")
+        if v and os.path.isfile(v):
+            return v
+    except Exception:
+        pass
+    return ""
+
+
+def read_wallpaper_bytes():
+    """把当前壁纸原样交给前端当玻璃底图。
+
+    为什么要走接口而不是复制到 web/：
+      · 打包后 WEB_DIR 在 _MEIPASS 临时目录，每次启动复制一张 4K 壁纸既慢又白写；
+      · 前端也不该去读 file:// （http 页面混 file 源会被拦）。
+    超过 12MB 就不给了，避免每帧传大文件。
+    """
+    p = wallpaper_path()
+    if not p:
+        return None, None
+    try:
+        st = os.stat(p)
+        ext = os.path.splitext(p)[1].lower()
+        ctype = "image/png" if ext == ".png" else (
+            "image/webp" if ext == ".webp" else (
+                "image/bmp" if ext == ".bmp" else "image/jpeg"))
+        if _WALLPAPER_CACHE["mtime"] == st.st_mtime and _WALLPAPER_CACHE["data"]:
+            return _WALLPAPER_CACHE["data"], _WALLPAPER_CACHE["ctype"]
+        if st.st_size > 12 * 1024 * 1024:
+            return None, None
+        with open(p, "rb") as f:
+            data = f.read()
+        _WALLPAPER_CACHE["mtime"] = st.st_mtime
+        _WALLPAPER_CACHE["data"] = data
+        _WALLPAPER_CACHE["ctype"] = ctype
+        return data, ctype
+    except Exception:
+        return None, None
+
+
 def start_frontend_server(directory, api=None):
     """静态文件 + /api/* 一体服务，随机端口并强制禁用缓存。
 
@@ -199,6 +246,24 @@ def start_frontend_server(directory, api=None):
 
         def log_message(self, *args):
             pass
+
+        def do_GET(self):
+            path = urllib.parse.urlparse(self.path).path
+            if path == "/backdrop.jpg":
+                data, ctype = read_wallpaper_bytes()
+                if not data:
+                    self.send_error(404)
+                    return
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
+            super().do_GET()
 
         def do_POST(self):
             path = urllib.parse.urlparse(self.path).path

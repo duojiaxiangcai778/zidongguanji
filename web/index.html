@@ -7,9 +7,10 @@
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-<div class="ambient" aria-hidden="true">
-  <span class="blob a"></span><span class="blob b"></span><span class="blob c"></span>
-</div>
+<!-- 底层：桌面壁纸（后端 /backdrop.jpg 提供）。玻璃只吃它，自己保持清晰。 -->
+<div class="backdrop" id="backdrop" aria-hidden="true"></div>
+<!-- 唯一一层玻璃：高光是画出来的，不是垫投影 -->
+<div class="sheet" aria-hidden="true"></div>
 
 <div class="app">
   <!-- ================= 标题栏 ================= -->
@@ -190,5 +191,6 @@
 
 <div class="toasts" id="toasts"></div>
 <script src="app.js"></script>
+<script src="glass.js"></script>
 </body>
 </html>
