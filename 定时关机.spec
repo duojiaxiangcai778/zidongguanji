@@ -1,3 +1,4 @@
+import os
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
@@ -42,5 +43,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['E:/自动关机工具/assets/icon.ico'],
+    icon=[os.path.join(SPECPATH, 'assets', 'icon.ico')],
 )

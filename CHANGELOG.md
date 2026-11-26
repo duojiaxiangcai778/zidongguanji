@@ -1,5 +1,43 @@
 # 自动关机工具 更新日志
 
+## 2026-11-27 — 关机/重启前预刷卷写缓存（防内核刷盘卡死）
+
+### 背景
+
+本机 2026-11-05 起关机关不掉，根因是 C: 卷 NTFS 损坏置脏位，关机走到内核
+`PopFlushVolumes`（刷所有卷）时卡在 Ntfs 上。对策是「发起 shutdown 之前先把各卷写缓存刷干净，
+让内核那一步无活可干」—— 这个动作原本只存在于旁边一个独立 ps1 脚本里，主程序关机时没有。
+
+### 做了什么
+
+- 新增 `core/preflush.py`：探测各固定卷的总线类型，逐卷跑 `fsutil volume flush X:`，
+  **每个卷跑在独立子进程里并带硬超时**（默认 10 秒），超时就杀掉子进程继续下一个。
+- `core/actions.py`：新增 `_preflush_before()`，接在 `shutdown()` 与 `restart()` 里，
+  `safe_close_windows()` 之后、`_run_shutdown()` 之前。**注销/睡眠/关屏不接**（不触发全卷刷盘）。
+- `core/config.py` + `settings.ini`：新增 `preflush_cache` / `preflush_timeout_sec` / `preflush_include_usb`。
+- `定时关机.spec`：图标路径从写死的 `E:/自动关机工具/assets/icon.ico` 改成相对 SPECPATH
+  —— 这是 2026-11-24 从 E: 搬到 F: 后的残留，导致搬家后无法重新打包。
+
+### 为什么必须有硬超时
+
+E:（TOSHIBA 2TB）与 F:（HSEN 1TB）都是 **USB 外置盘**，闲置几小时后休眠。
+对休眠中的 USB 盘刷写缓存可以几十秒不返回 —— 实测 2026-11-27 02:24 两次手动运行旧脚本，
+都死在同一行（C、D 刷完了，E 永远没返回），表现为「点了关机没反应」。
+所以默认**跳过 BusType == USB 的卷**，要刷得分开关打开。
+
+### 验证（真实环境，venv Python 3.11.9，不关机）
+
+```
+probe: [('C','NVMe'), ('D','NVMe'), ('E','USB'), ('F','USB')]
+normal   ok=2 skipped=2  1.5s
+with usb ok=4 skipped=0  2.4s (timeout 3s)
+```
+
+超时机制单独验证：用故意睡 60 秒的子进程冒充卡死的盘，2 秒被掐断。
+**未验证**：真正发起关机那一次（跑就会关机），等用户下次真关机看日志确认。
+
+详见 `工作记录/2026-11-27-关机前预刷缓存.md`。
+
 ## 2026-11-21 — 新增 MCP 服务（不改 exe 版本号）
 
 ### 做了什么

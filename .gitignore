@@ -32,3 +32,6 @@ test_args.py
 # MCP 服务运行时任务表（每台机器各一份，不入库）
 mcp/tasks.json
 mcp/tasks.json.tmp
+
+# exe 备份（重打包回滚用，不入库）
+*.exe.bak-*

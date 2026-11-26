@@ -51,6 +51,10 @@ class Config:
             'progress_mode': 'percent',
             'start_minimized': 'false',
             'log_level': 'INFO',
+            # 关机/重启前预刷卷写缓存（防内核 PopFlushVolumes 刷盘卡死，见 core/preflush.py）
+            'preflush_cache': 'true',
+            'preflush_timeout_sec': '10',
+            'preflush_include_usb': 'false',
         }
         self.config['Window'] = {
             'geometry': '',

@@ -182,12 +182,42 @@ def _run_shutdown(args):
         log_exception_local(f"shutdown 调用失败，参数: {args!r}", e)
 
 
+def _preflush_before(operation):
+    """关机/重启前预刷卷写缓存（防内核刷盘阶段卡死）。
+
+    读 settings.ini：
+      preflush_cache       = true/false  总开关，默认 true
+      preflush_timeout_sec = 10          单卷硬超时，默认 10 秒
+      preflush_include_usb = false       是否连 USB 外置盘一起刷，默认不刷
+    任何异常都吞掉，绝不挡住关机。
+    """
+    try:
+        from core.config import Config
+        from core.preflush import run_before_poweroff
+
+        cfg = Config()
+        enabled = cfg.getboolean('General', 'preflush_cache', True)
+        timeout_sec = cfg.getint('General', 'preflush_timeout_sec', 10)
+        include_usb = cfg.getboolean('General', 'preflush_include_usb', False)
+        if not timeout_sec or timeout_sec <= 0:
+            timeout_sec = 10
+        run_before_poweroff(
+            operation=operation,
+            timeout_sec=timeout_sec,
+            include_usb=include_usb,
+            enabled=enabled,
+        )
+    except Exception as e:
+        log.warning("[预刷] 预刷环节异常，忽略并继续: %s", e)
+
+
 def shutdown():
     """安全关闭程序后关闭电脑。
     如果检测到需要安全关闭的窗口，不使用 /f，让 Windows 拦截界面接管。
     """
     audit("开始执行操作", 操作="关闭电脑")
     had_safe_windows = safe_close_windows()
+    _preflush_before("关机")
     cmd_args = ["/s", "/t", "0"]
     if _force_shutdown and not had_safe_windows:
         cmd_args.append("/f")
@@ -200,6 +230,7 @@ def restart():
     """
     audit("开始执行操作", 操作="重启电脑")
     had_safe_windows = safe_close_windows()
+    _preflush_before("重启")
     cmd_args = ["/r", "/t", "0"]
     if _force_shutdown and not had_safe_windows:
         cmd_args.append("/f")
